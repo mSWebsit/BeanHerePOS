@@ -143,7 +143,6 @@
               const unsub = onSnapshot(q, (snapshot) => {
                   const items = snapshot.docs.map(doc => {
                       const data = doc.data();
-                      // Price Cleaning Logic
                       let rawPrice = data.price !== undefined ? data.price : (data.Price !== undefined ? data.Price : 0);
                       let val = Number(String(rawPrice).replace(/[^0-9.]/g, ''));
                       if (isNaN(val)) val = 0;
@@ -167,6 +166,7 @@
           const q = query(collection(db, "tickets"), orderBy("createdAt"));
           return onSnapshot(q, (snapshot) => {
             const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            // FORCE ORDER 1 IF EMPTY
             if(data.length === 0) setTickets([{ id: 'local-temp', name: 'Order 1', items: [], status: 'open', createdAt: Date.now() }]);
             else setTickets(data);
           });
@@ -218,12 +218,16 @@
           if(ticketId === 'local-temp') setTickets([{ id: 'local-temp', name: 'Order 1', items: [], status: 'open', createdAt: Date.now() }]);
           else await deleteDoc(doc(db, "tickets", ticketId));
         };
+
+        // --- COMPLETE TICKET (MODIFIED: Clear items instead of delete) ---
         const completeTicket = async (ticketId) => {
           const ticket = tickets.find(t => t.id === ticketId);
           if (!ticket || ticket.items.length === 0) return;
           const total = ticket.items.reduce((sum, item) => sum + (Number(item.price) * item.quantity), 0);
           
           const batch = writeBatch(db);
+          
+          // 1. Create Sale Record
           batch.set(doc(collection(db, "sales")), {
             ticketName: ticket.name,
             items: [...ticket.items],
@@ -231,11 +235,19 @@
             timestamp: Date.now(),
             paymentMethod: 'cash'
           });
-          if (ticketId !== 'local-temp') batch.delete(doc(db, "tickets", ticketId));
+
+          // 2. Clear items but keep ticket open
+          if (ticketId !== 'local-temp') {
+             const ticketRef = doc(db, "tickets", ticketId);
+             batch.update(ticketRef, { items: [] });
+          } else {
+             // Local temp handling
+             setTickets(prev => prev.map(t => t.id === 'local-temp' ? { ...t, items: [] } : t));
+          }
+          
           await batch.commit();
         };
 
-        // NEW: DELETE SALE
         const deleteSale = async (saleId) => {
             if(window.confirm("Are you sure you want to delete this order history?")) {
                 await deleteDoc(doc(db, "sales", saleId));
@@ -359,19 +371,15 @@
                   {['daily', 'weekly', 'monthly'].map(t => <button key={t} onClick={() => setTimeframe(t)} className={`px-4 py-2 rounded-md text-sm font-medium capitalize transition-all ${timeframe === t ? 'bg-[#0A3325] text-white shadow' : 'text-slate-600 hover:bg-slate-50'}`}>{t}</button>)}
               </div>
             </header>
-
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4"><div className="p-3 rounded-xl shrink-0 bg-[#0A3325]/10 text-[#0A3325]"><DollarSign size={24} /></div><div className="min-w-0"><p className="text-slate-500 text-sm font-medium truncate">Revenue</p><p className="text-xl lg:text-2xl font-bold text-slate-900 truncate">{formatPrice(stats.totalRevenue)}</p></div></div>
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4"><div className="p-3 rounded-xl shrink-0 bg-blue-100 text-blue-600"><ShoppingBag size={24} /></div><div className="min-w-0"><p className="text-slate-500 text-sm font-medium truncate">Orders</p><p className="text-xl lg:text-2xl font-bold text-slate-900 truncate">{stats.totalOrders}</p></div></div>
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4"><div className="p-3 rounded-xl shrink-0 bg-amber-100 text-amber-600"><Star size={24} /></div><div className="min-w-0"><p className="text-slate-500 text-sm font-medium truncate">Top Item</p><p className="text-xl lg:text-2xl font-bold text-slate-900 truncate">{stats.mostPopularItem}</p></div></div>
             </div>
-
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
               <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-96">
                 <h3 className="text-lg font-bold text-slate-900 mb-6 capitalize">Revenue Timeline - {timeframe}</h3>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" /><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} /><Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} formatter={(value) => [value.toLocaleString(), "Revenue"]}/><Bar dataKey="value" radius={[4, 4, 0, 0]}>{chartData.map((entry, index) => <Cell key={'cell-' + index} fill={index % 2 === 0 ? '#0A3325' : '#145c43'} />)}</Bar></BarChart>
-                </ResponsiveContainer>
+                <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" /><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} /><Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} formatter={(value) => [value.toLocaleString(), "Revenue"]}/><Bar dataKey="value" radius={[4, 4, 0, 0]}>{chartData.map((entry, index) => <Cell key={'cell-' + index} fill={index % 2 === 0 ? '#0A3325' : '#145c43'} />)}</Bar></BarChart></ResponsiveContainer>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-96 flex flex-col">
                 <h3 className="text-lg font-bold text-slate-900 mb-4">Items Sold</h3>
@@ -380,8 +388,6 @@
                 </div>
               </div>
             </div>
-
-            {/* --- NEW TRANSACTION HISTORY TABLE --- */}
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                 <h3 className="text-lg font-bold text-slate-900 mb-4">Transaction History ({timeframe})</h3>
                 <div className="overflow-x-auto">
@@ -394,9 +400,7 @@
                                     <td className="py-3 font-medium text-slate-900">{sale.ticketName || 'Order'}</td>
                                     <td className="py-3 text-sm text-slate-500 max-w-[200px] truncate">{sale.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}</td>
                                     <td className="py-3 font-bold text-[#0A3325]">{formatPrice(sale.total)}</td>
-                                    <td className="py-3 text-right">
-                                        <button onClick={() => deleteSale(sale.id)} className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={18} /></button>
-                                    </td>
+                                    <td className="py-3 text-right"><button onClick={() => deleteSale(sale.id)} className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={18} /></button></td>
                                 </tr>
                             ))}
                             {filteredSales.length === 0 && <tr><td colSpan="5" className="py-8 text-center text-slate-400">No transactions found</td></tr>}
@@ -408,7 +412,6 @@
         );
       };
 
-      // --- POS PAGE ---
       const POSPage = () => {
          const { inventory, tickets, createTicket, updateTicketItems, deleteTicket, completeTicket, formatPrice } = useData();
          const [activeId, setActiveId] = useState('');
@@ -417,13 +420,7 @@
          
          useEffect(() => { if(!tickets.find(t=>t.id===activeId) && tickets.length>0) setActiveId(tickets[0].id); }, [tickets, activeId]);
          const activeTicket = tickets.find(t=>t.id===activeId) || tickets[0];
-         
-         const displayCategories = useMemo(() => {
-             const cats = new Set(['All']);
-             inventory.forEach(i => cats.add(i.category));
-             return Array.from(cats);
-         }, [inventory]);
-
+         const displayCategories = useMemo(() => { const cats = new Set(['All']); inventory.forEach(i => cats.add(i.category)); return Array.from(cats); }, [inventory]);
          const filtered = inventory.filter(i => (cat==='All'||i.category===cat) && i.name.toLowerCase().includes(search.toLowerCase()));
          const addItem = (item) => {
             if(!activeTicket) return;
@@ -451,7 +448,7 @@
                </div>
                <div className="w-full md:w-80 lg:w-96 fixed right-0 top-0 h-full bg-white border-l flex flex-col pt-16 md:pt-0 z-30 translate-x-full md:translate-x-0 transition-transform shadow-2xl md:shadow-none">
                   <div className="h-14 border-b flex items-center px-2 gap-2 overflow-x-auto no-scrollbar bg-slate-50">
-                     {tickets.map(t=><button key={t.id} onClick={()=>setActiveId(t.id)} className={`px-3 py-1 text-xs rounded border whitespace-nowrap ${activeId===t.id?'bg-white border-[#0A3325] text-[#0A3325] shadow-sm':'bg-slate-100 text-slate-500'}`}>{t.name}</button>)}
+                     {tickets.map(t=><button key={t.id} onClick={()=>setActiveId(t.id)} className={`group relative flex flex-col items-center justify-center p-1 rounded-lg text-xs font-medium cursor-pointer transition-all h-14 border ${activeId===t.id?'bg-white shadow-sm text-[#0A3325] border-[#0A3325]/20 ring-1 ring-[#0A3325]/10':'bg-slate-100 text-slate-500 hover:bg-slate-200 border-transparent'}`}><Ticket size={14} className="mb-1 opacity-70" /><span className="truncate w-full text-center px-1 leading-tight">{t.name}</span><button onClick={(e) => { e.stopPropagation(); deleteTicket(t.id); }} className="absolute -top-1 -right-1 bg-red-100 text-red-600 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"><X size={10} /></button></button>)}
                      <button onClick={()=>createTicket(`Order ${tickets.length+1}`)} className="px-2"><Plus size={16}/></button>
                   </div>
                   <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -539,12 +536,6 @@
          );
       };
       const root = createRoot(document.getElementById('root'));
-      root.render(<React.StrictMode><AuthProvider><DataProvider><App/></DataProvider></AuthProvider></React.StrictMode>);
-    </script>
-
-   
-  
-      
+      root.render(<React.StrictMode><AuthProvider><DataProvider><App/></DataProvider></AuthProvider></React.StrictMode>);  
 </body>
-
 </html>
