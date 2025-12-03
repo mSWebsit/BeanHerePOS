@@ -146,6 +146,7 @@
                       let rawPrice = data.price !== undefined ? data.price : (data.Price !== undefined ? data.Price : 0);
                       let val = Number(String(rawPrice).replace(/[^0-9.]/g, ''));
                       if (isNaN(val)) val = 0;
+                      // AUTO-DETECT: If price > 1000, assume LBP and convert to USD
                       if (val > 1000) val = val / EXCHANGE_RATE;
 
                       const displayCat = catId.replace(/([A-Z])/g, " $1").replace(/^./, s => s.toUpperCase());
@@ -207,27 +208,17 @@
              await deleteDoc(doc(db, "menuData", targetCollection, "items", item.id));
         };
 
-        // --- FIXED CREATE TICKET ---
         const createTicket = async () => {
-          // 1. Calculate next name
           const nextNum = tickets.reduce((max, t) => {
              const num = parseInt(t.name.replace('Order ', '')) || 0;
              return num > max ? num : max;
           }, 0) + 1;
           const newName = `Order ${nextNum}`;
-
-          // 2. Check for local temp ticket and save it if it exists
+          
           const localTicket = tickets.find(t => t.id === 'local-temp');
           if (localTicket) {
-             await addDoc(collection(db, "tickets"), { 
-                name: localTicket.name, 
-                items: localTicket.items, 
-                status: 'open', 
-                createdAt: Date.now() 
-             });
+             await addDoc(collection(db, "tickets"), { name: localTicket.name, items: localTicket.items, status: 'open', createdAt: Date.now() });
           }
-
-          // 3. Create the new ticket
           await addDoc(collection(db, "tickets"), { name: newName, items: [], status: 'open', createdAt: Date.now() + 10 });
         };
 
@@ -504,7 +495,7 @@
                              </div>
                              <div className="text-right shrink-0">
                                  <div className="font-bold">{formatPrice(item.price)}</div>
-                                 <div className="flex justify-end gap-2 mt-1"><button onClick={()=>{setForm(item); setMode('edit')}} className="text-slate-400 hover:text-[#0A3325]"><Edit2 size={16}/></button><button onClick={()=>deleteInventoryItem(item)} className="text-slate-400 hover:text-red-500"><Trash2 size={16}/></button></div>
+                                 <div className="flex justify-end gap-2 mt-1"><button onClick={()=>{setForm({...item, price: Math.round(item.price * 90000)}); setMode('edit')}} className="text-slate-400 hover:text-[#0A3325]"><Edit2 size={16}/></button><button onClick={()=>deleteInventoryItem(item)} className="text-slate-400 hover:text-red-500"><Trash2 size={16}/></button></div>
                              </div>
                          </div>
                      ))}
@@ -514,7 +505,7 @@
                          <form onSubmit={handleSubmit} className="bg-white p-6 rounded-2xl w-full max-w-sm space-y-3">
                              <h3 className="font-bold text-lg">{mode==='add'?'Add':'Edit'} Item</h3>
                              <input required placeholder="Name" className="w-full border p-2 rounded" value={form.name} onChange={e=>setForm({...form, name:e.target.value})}/>
-                             <input type="number" step="0.01" required placeholder="Price (in USD or LBP)" className="w-full border p-2 rounded" value={form.price} onChange={e=>setForm({...form, price:e.target.value})}/>
+                             <input type="number" step="1" required placeholder="Price (L.L)" className="w-full border p-2 rounded" value={form.price} onChange={e=>setForm({...form, price:e.target.value})}/>
                              <select className="w-full border p-2 rounded" value={form.dbCollectionId} onChange={e=>setForm({...form, dbCollectionId:e.target.value})}>{DB_COLLECTIONS.map(c => <option key={c} value={c}>{c}</option>)}</select>
                              <input placeholder="Image URL (Optional)" className="w-full border p-2 rounded" value={form.img||''} onChange={e=>setForm({...form, img:e.target.value})}/>
                              <div className="flex gap-2 pt-2"><button type="button" onClick={()=>setMode(null)} className="flex-1 bg-slate-100 p-2 rounded">Cancel</button><button type="submit" className="flex-1 bg-[#0A3325] text-white p-2 rounded">Save</button></div>
