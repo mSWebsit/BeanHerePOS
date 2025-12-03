@@ -65,7 +65,7 @@
 
 <body class="bg-slate-50 text-slate-900 font-sans antialiased overflow-hidden">
   <div id="root" class="h-screen w-screen flex flex-col"></div>
-  <script type="text/babel" data-type="module" crossorigin="anonymous">
+ <script type="text/babel" data-type="module" crossorigin="anonymous">
       import React, { useState, useEffect, useContext, createContext, useMemo, useRef } from 'react';
       import { createRoot } from 'react-dom/client';
       import { 
@@ -166,7 +166,6 @@
           const q = query(collection(db, "tickets"), orderBy("createdAt"));
           return onSnapshot(q, (snapshot) => {
             const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            // FORCE ORDER 1 IF EMPTY
             if(data.length === 0) setTickets([{ id: 'local-temp', name: 'Order 1', items: [], status: 'open', createdAt: Date.now() }]);
             else setTickets(data);
           });
@@ -207,9 +206,31 @@
              if(!targetCollection) return;
              await deleteDoc(doc(db, "menuData", targetCollection, "items", item.id));
         };
-        const createTicket = async (name) => {
-          await addDoc(collection(db, "tickets"), { name, items: [], status: 'open', createdAt: Date.now() });
+
+        // --- FIXED CREATE TICKET ---
+        const createTicket = async () => {
+          // 1. Calculate next name
+          const nextNum = tickets.reduce((max, t) => {
+             const num = parseInt(t.name.replace('Order ', '')) || 0;
+             return num > max ? num : max;
+          }, 0) + 1;
+          const newName = `Order ${nextNum}`;
+
+          // 2. Check for local temp ticket and save it if it exists
+          const localTicket = tickets.find(t => t.id === 'local-temp');
+          if (localTicket) {
+             await addDoc(collection(db, "tickets"), { 
+                name: localTicket.name, 
+                items: localTicket.items, 
+                status: 'open', 
+                createdAt: Date.now() 
+             });
+          }
+
+          // 3. Create the new ticket
+          await addDoc(collection(db, "tickets"), { name: newName, items: [], status: 'open', createdAt: Date.now() + 10 });
         };
+
         const updateTicketItems = async (ticketId, items) => {
           if (ticketId === 'local-temp') await addDoc(collection(db, "tickets"), { name: 'Order 1', items, status: 'open', createdAt: Date.now() });
           else await updateDoc(doc(db, "tickets", ticketId), { items });
@@ -218,16 +239,12 @@
           if(ticketId === 'local-temp') setTickets([{ id: 'local-temp', name: 'Order 1', items: [], status: 'open', createdAt: Date.now() }]);
           else await deleteDoc(doc(db, "tickets", ticketId));
         };
-
-        // --- COMPLETE TICKET (MODIFIED: Clear items instead of delete) ---
         const completeTicket = async (ticketId) => {
           const ticket = tickets.find(t => t.id === ticketId);
           if (!ticket || ticket.items.length === 0) return;
           const total = ticket.items.reduce((sum, item) => sum + (Number(item.price) * item.quantity), 0);
           
           const batch = writeBatch(db);
-          
-          // 1. Create Sale Record
           batch.set(doc(collection(db, "sales")), {
             ticketName: ticket.name,
             items: [...ticket.items],
@@ -235,16 +252,12 @@
             timestamp: Date.now(),
             paymentMethod: 'cash'
           });
-
-          // 2. Clear items but keep ticket open
           if (ticketId !== 'local-temp') {
              const ticketRef = doc(db, "tickets", ticketId);
              batch.update(ticketRef, { items: [] });
           } else {
-             // Local temp handling
              setTickets(prev => prev.map(t => t.id === 'local-temp' ? { ...t, items: [] } : t));
           }
-          
           await batch.commit();
         };
 
@@ -449,7 +462,7 @@
                <div className="w-full md:w-80 lg:w-96 fixed right-0 top-0 h-full bg-white border-l flex flex-col pt-16 md:pt-0 z-30 translate-x-full md:translate-x-0 transition-transform shadow-2xl md:shadow-none">
                   <div className="h-14 border-b flex items-center px-2 gap-2 overflow-x-auto no-scrollbar bg-slate-50">
                      {tickets.map(t=><button key={t.id} onClick={()=>setActiveId(t.id)} className={`group relative flex flex-col items-center justify-center p-1 rounded-lg text-xs font-medium cursor-pointer transition-all h-14 border ${activeId===t.id?'bg-white shadow-sm text-[#0A3325] border-[#0A3325]/20 ring-1 ring-[#0A3325]/10':'bg-slate-100 text-slate-500 hover:bg-slate-200 border-transparent'}`}><Ticket size={14} className="mb-1 opacity-70" /><span className="truncate w-full text-center px-1 leading-tight">{t.name}</span><button onClick={(e) => { e.stopPropagation(); deleteTicket(t.id); }} className="absolute -top-1 -right-1 bg-red-100 text-red-600 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"><X size={10} /></button></button>)}
-                     <button onClick={()=>createTicket(`Order ${tickets.length+1}`)} className="px-2"><Plus size={16}/></button>
+                     <button onClick={createTicket} className="px-2"><Plus size={16}/></button>
                   </div>
                   <div className="flex-1 overflow-y-auto p-4 space-y-2">
                      {activeTicket?.items.length > 0 ? activeTicket.items.map(i=>(
@@ -536,7 +549,7 @@
          );
       };
       const root = createRoot(document.getElementById('root'));
-      root.render(<React.StrictMode><AuthProvider><DataProvider><App/></DataProvider></AuthProvider></React.StrictMode>);  
-</script>
+      root.render(<React.StrictMode><AuthProvider><DataProvider><App/></DataProvider></AuthProvider></React.StrictMode>);
+    </script>
 </body>
 </html>
