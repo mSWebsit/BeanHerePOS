@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BEAN here - Admin POS</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin="anonymous"></script>
+
+  <script>
+    window.onerror = function (message, source, lineno, colno, error) {
+      console.error("Global Error:", message, error);
+      // We suppress the alert to not annoy the user, but it logs to console
+    };
+  </script>
+
+  <script>window.process = { env: { NODE_ENV: 'production' } };</script>
+
+  <style>
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+
+  <!-- Firebase Imports -->
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client?deps=react@18.2.0",
+        "react-dom": "https://esm.sh/react-dom@18.2.0?deps=react@18.2.0",
+        "recharts": "https://esm.sh/recharts@2.12.2?deps=react@18.2.0,react-dom@18.2.0",
+        "lucide-react": "https://esm.sh/lucide-react@0.344.0?deps=react@18.2.0",
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js"
+      }
+    }
+    </script>
+</head>
+
+<body class="bg-slate-50 text-slate-900 font-sans antialiased overflow-hidden">
+  <div id="root" class="h-screen w-screen flex flex-col"></div>
+  <script type="text/babel" data-type="module" crossorigin="anonymous">
+      import React, { useState, useEffect, useContext, createContext, useMemo, useRef } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { 
+        LayoutDashboard, ShoppingCart, Package, Menu, Coins, 
+        Plus, Minus, Ticket, X, Search, CheckCircle,
+        Edit2, Trash2, Save, PackageOpen, Layers,
+        DollarSign, ShoppingBag, Star, Loader2, LogOut, Lock
+      } from 'lucide-react';
+      import { 
+        BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell 
+      } from 'recharts';
+      
+      import { initializeApp } from "firebase/app";
+      import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "firebase/auth";
+      import { 
+        getFirestore, collection, addDoc, updateDoc, deleteDoc, 
+        doc, onSnapshot, query, orderBy, writeBatch, getDoc, getDocs 
+      } from "firebase/firestore";
+
+      // --- CONFIGURATION ---
+      const firebaseConfig = {
+        apiKey: "AIzaSyDONkqXl_yn_gbPQWsALfOOHhPoVm3N41U",
+        authDomain: "bean-hear-authentication.firebaseapp.com",
+        projectId: "bean-hear-authentication",
+        storageBucket: "bean-hear-authentication.firebasestorage.app",
+        messagingSenderId: "158281052460",
+        appId: "1:158281052460:web:4aedd863e7e419103f3c89"
+      };
+
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+
+      const adminEmails = ["admin@beanhere.com", "owner@mycafe.com", "mhmd@gmail.com"];
+      const DB_COLLECTIONS = ["hotDrinks", "coldDrinks", "food", "desserts", "snacks", "shisha"];
+      const EXCHANGE_RATE = 90000;
+      
+      // --- AUTH CONTEXT ---
+      const AuthContext = createContext();
+      const AuthProvider = ({ children }) => {
+        const [user, setUser] = useState(null);
+        const [authLoading, setAuthLoading] = useState(true);
+
+        useEffect(() => {
+          return onAuthStateChanged(auth, (currentUser) => {
+            if (currentUser && adminEmails.includes(currentUser.email)) {
+               setUser(currentUser);
+            } else {
+               if(currentUser) signOut(auth);
+               setUser(null);
+            }
+            setAuthLoading(false);
+          });
+        }, []);
+
+        if (authLoading) return <div className="h-screen w-full flex items-center justify-center bg-slate-50 text-[#0A3325] font-bold gap-2"><Loader2 className="animate-spin"/> Loading...</div>;
+        return <AuthContext.Provider value={{ user }}>{children}</AuthContext.Provider>;
+      };
+
+      // --- DATA CONTEXT ---
+      const DataContext = createContext(undefined);
+
+      const DataProvider = ({ children }) => {
+        const [currency, setCurrency] = useState('LBP');
+        const [inventory, setInventory] = useState([]); 
+        const [tickets, setTickets] = useState([]);
+        const [salesHistory, setSalesHistory] = useState([]);
+        const [categories, setCategories] = useState(DB_COLLECTIONS);
+        
+        // 1. SYNC INVENTORY
+        useEffect(() => {
+          const unsubscribers = [];
+          DB_COLLECTIONS.forEach(catId => {
+              const q = collection(db, "menuData", catId, "items");
+              const unsub = onSnapshot(q, (snapshot) => {
+                  const items = snapshot.docs.map(doc => {
+                      const data = doc.data();
+                      // Price Cleaning Logic
+                      let rawPrice = data.price !== undefined ? data.price : (data.Price !== undefined ? data.Price : 0);
+                      let val = Number(String(rawPrice).replace(/[^0-9.]/g, ''));
+                      if (isNaN(val)) val = 0;
+                      if (val > 1000) val = val / EXCHANGE_RATE;
+
+                      const displayCat = catId.replace(/([A-Z])/g, " $1").replace(/^./, s => s.toUpperCase());
+                      return { id: doc.id, ...data, price: val, dbCollectionId: catId, category: displayCat };
+                  });
+                  setInventory(prev => {
+                      const otherItems = prev.filter(i => i.dbCollectionId !== catId);
+                      return [...otherItems, ...items].sort((a,b) => (a.order||0) - (b.order||0));
+                  });
+              });
+              unsubscribers.push(unsub);
+          });
+          return () => unsubscribers.forEach(u => u());
+        }, []);
+
+        // 2. SYNC TICKETS
+        useEffect(() => {
+          const q = query(collection(db, "tickets"), orderBy("createdAt"));
+          return onSnapshot(q, (snapshot) => {
+            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            if(data.length === 0) setTickets([{ id: 'local-temp', name: 'Order 1', items: [], status: 'open', createdAt: Date.now() }]);
+            else setTickets(data);
+          });
+        }, []);
+
+        // 3. SYNC SALES
+        useEffect(() => {
+          const q = query(collection(db, "sales"), orderBy("timestamp", "desc"));
+          return onSnapshot(q, (snapshot) => {
+            setSalesHistory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+          });
+        }, []);
+
+        const toggleCurrency = () => setCurrency(prev => prev === 'USD' ? 'LBP' : 'USD');
+        const convertPrice = (amount) => currency === 'USD' ? amount : amount * EXCHANGE_RATE;
+        const formatPrice = (amount) => {
+            const num = Number(amount);
+            if (isNaN(num)) return currency === 'USD' ? '$0.00' : '0 L.L';
+            if (currency === 'USD') return '$' + num.toFixed(2);
+            return (Math.round((num * EXCHANGE_RATE) / 1000) * 1000).toLocaleString() + ' L.L';
+        };
+
+        // ACTIONS
+        const addInventoryItem = async (item) => {
+            const targetCollection = item.dbCollectionId || "hotDrinks"; 
+            const cleanItem = { ...item, price: Number(item.price) || 0 };
+            await addDoc(collection(db, "menuData", targetCollection, "items"), cleanItem);
+        };
+        const updateInventoryItem = async (updatedItem) => {
+            const targetCollection = updatedItem.dbCollectionId;
+            if(!targetCollection) return; 
+            const cleanItem = { ...updatedItem, price: Number(updatedItem.price) || 0 };
+            const ref = doc(db, "menuData", targetCollection, "items", updatedItem.id);
+            await updateDoc(ref, cleanItem);
+        };
+        const deleteInventoryItem = async (item) => {
+             const targetCollection = item.dbCollectionId;
+             if(!targetCollection) return;
+             await deleteDoc(doc(db, "menuData", targetCollection, "items", item.id));
+        };
+        const createTicket = async (name) => {
+          await addDoc(collection(db, "tickets"), { name, items: [], status: 'open', createdAt: Date.now() });
+        };
+        const updateTicketItems = async (ticketId, items) => {
+          if (ticketId === 'local-temp') await addDoc(collection(db, "tickets"), { name: 'Order 1', items, status: 'open', createdAt: Date.now() });
+          else await updateDoc(doc(db, "tickets", ticketId), { items });
+        };
+        const deleteTicket = async (ticketId) => {
+          if(ticketId === 'local-temp') setTickets([{ id: 'local-temp', name: 'Order 1', items: [], status: 'open', createdAt: Date.now() }]);
+          else await deleteDoc(doc(db, "tickets", ticketId));
+        };
+        const completeTicket = async (ticketId) => {
+          const ticket = tickets.find(t => t.id === ticketId);
+          if (!ticket || ticket.items.length === 0) return;
+          const total = ticket.items.reduce((sum, item) => sum + (Number(item.price) * item.quantity), 0);
+          
+          const batch = writeBatch(db);
+          batch.set(doc(collection(db, "sales")), {
+            ticketName: ticket.name,
+            items: [...ticket.items],
+            total,
+            timestamp: Date.now(),
+            paymentMethod: 'cash'
+          });
+          if (ticketId !== 'local-temp') batch.delete(doc(db, "tickets", ticketId));
+          await batch.commit();
+        };
+
+        // NEW: DELETE SALE
+        const deleteSale = async (saleId) => {
+            if(window.confirm("Are you sure you want to delete this order history?")) {
+                await deleteDoc(doc(db, "sales", saleId));
+            }
+        };
+
+        return (
+          <DataContext.Provider value={{
+            inventory, tickets, salesHistory, currency, categories,
+            toggleCurrency, formatPrice, convertPrice,
+            addInventoryItem, updateInventoryItem, deleteInventoryItem, 
+            createTicket, updateTicketItems, deleteTicket, completeTicket, deleteSale
+          }}>
+            {children}
+          </DataContext.Provider>
+        );
+      };
+
+      const useData = () => {
+        const context = useContext(DataContext);
+        if (!context) throw new Error('useData must be used within DataProvider');
+        return context;
+      };
+
+      const LoginScreen = () => {
+        const [email, setEmail] = useState('');
+        const [password, setPassword] = useState('');
+        const [error, setError] = useState('');
+        const [loading, setLoading] = useState(false);
+        const handleLogin = async (e) => {
+          e.preventDefault(); setLoading(true); setError('');
+          try { await signInWithEmailAndPassword(auth, email.toLowerCase().trim(), password); } 
+          catch (err) { setError('Invalid credentials.'); setLoading(false); }
+        };
+        return (
+          <div className="h-screen w-full flex items-center justify-center bg-[#0A3325]">
+            <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md animate-in fade-in zoom-in duration-300">
+              <div className="flex flex-col items-center mb-6">
+                <div className="w-16 h-16 bg-[#0A3325]/10 rounded-full flex items-center justify-center mb-4"><Lock className="text-[#0A3325]"/></div>
+                <h1 className="text-xl font-bold">BEAN here Admin</h1>
+              </div>
+              <form onSubmit={handleLogin} className="space-y-4">
+                <input type="email" required className="w-full px-4 py-3 border rounded-xl" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" />
+                <input type="password" required className="w-full px-4 py-3 border rounded-xl" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" />
+                {error && <div className="text-red-500 text-sm text-center">{error}</div>}
+                <button type="submit" disabled={loading} className="w-full py-3 bg-[#0A3325] text-white rounded-xl font-bold flex items-center justify-center gap-2">{loading ? 'Verifying...' : 'Sign In'}</button>
+              </form>
+            </div>
+          </div>
+        );
+      };
+
+      const SalesPage = () => {
+        const { salesHistory, formatPrice, convertPrice, deleteSale } = useData();
+        const [timeframe, setTimeframe] = useState('daily');
+
+        const filteredSales = useMemo(() => {
+          const now = new Date();
+          const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const startOfWeek = new Date(startOfDay);
+          const day = startOfWeek.getDay() || 7; 
+          if (day !== 1) startOfWeek.setDate(startOfWeek.getDate() - (day - 1));
+          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+          return salesHistory.filter(sale => {
+            const saleDate = new Date(sale.timestamp);
+            if (timeframe === 'daily') return saleDate >= startOfDay && saleDate < new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+            if (timeframe === 'weekly') return saleDate >= startOfWeek;
+            if (timeframe === 'monthly') return saleDate >= startOfMonth;
+            return true;
+          });
+        }, [salesHistory, timeframe]);
+
+        const stats = useMemo(() => {
+          const totalRevenue = filteredSales.reduce((sum, sale) => sum + sale.total, 0);
+          const totalOrders = filteredSales.length;
+          const itemCounts = {};
+          filteredSales.forEach(sale => {
+            sale.items.forEach(item => { itemCounts[item.name] = (itemCounts[item.name] || 0) + item.quantity; });
+          });
+          let mostPopularItem = 'N/A', maxCount = 0;
+          Object.entries(itemCounts).forEach(([name, count]) => { if (count > maxCount) { maxCount = count; mostPopularItem = name; } });
+          return { totalRevenue, totalOrders, mostPopularItem };
+        }, [filteredSales]);
+
+        const chartData = useMemo(() => {
+          let data = [];
+          if (timeframe === 'daily') {
+            for (let i = 0; i < 24; i++) data.push({ name: i + ':00', rawValue: 0 });
+            filteredSales.forEach(sale => data[new Date(sale.timestamp).getHours()].rawValue += sale.total);
+          } else if (timeframe === 'weekly') {
+            const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+            data = days.map(d => ({ name: d, rawValue: 0 }));
+            filteredSales.forEach(sale => data[(new Date(sale.timestamp).getDay() + 6) % 7].rawValue += sale.total);
+          } else {
+            const now = new Date();
+            const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+            for (let i = 1; i <= daysInMonth; i++) data.push({ name: i.toString(), rawValue: 0 });
+            filteredSales.forEach(sale => { const d = new Date(sale.timestamp).getDate(); if(data[d-1]) data[d-1].rawValue += sale.total; });
+          }
+          return data.map(item => ({ name: item.name, value: convertPrice(item.rawValue) }));
+        }, [filteredSales, timeframe, convertPrice]);
+
+        const itemsSoldData = useMemo(() => {
+          const itemsMap = {};
+          filteredSales.forEach(sale => {
+            sale.items.forEach(item => {
+              if (!itemsMap[item.name]) itemsMap[item.name] = { name: item.name, quantity: 0, revenue: 0 };
+              itemsMap[item.name].quantity += item.quantity;
+              itemsMap[item.name].revenue += (item.price * item.quantity);
+            });
+          });
+          return Object.values(itemsMap).sort((a, b) => b.quantity - a.quantity);
+        }, [filteredSales]);
+
+        return (
+          <div className="h-full p-6 overflow-y-auto bg-slate-50">
+            <header className="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div><h1 className="text-2xl font-bold text-slate-900">Sales</h1><p className="text-slate-500">Overview of your business performance</p></div>
+              <div className="flex bg-white rounded-lg p-1 border border-slate-200 shadow-sm">
+                  {['daily', 'weekly', 'monthly'].map(t => <button key={t} onClick={() => setTimeframe(t)} className={`px-4 py-2 rounded-md text-sm font-medium capitalize transition-all ${timeframe === t ? 'bg-[#0A3325] text-white shadow' : 'text-slate-600 hover:bg-slate-50'}`}>{t}</button>)}
+              </div>
+            </header>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4"><div className="p-3 rounded-xl shrink-0 bg-[#0A3325]/10 text-[#0A3325]"><DollarSign size={24} /></div><div className="min-w-0"><p className="text-slate-500 text-sm font-medium truncate">Revenue</p><p className="text-xl lg:text-2xl font-bold text-slate-900 truncate">{formatPrice(stats.totalRevenue)}</p></div></div>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4"><div className="p-3 rounded-xl shrink-0 bg-blue-100 text-blue-600"><ShoppingBag size={24} /></div><div className="min-w-0"><p className="text-slate-500 text-sm font-medium truncate">Orders</p><p className="text-xl lg:text-2xl font-bold text-slate-900 truncate">{stats.totalOrders}</p></div></div>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4"><div className="p-3 rounded-xl shrink-0 bg-amber-100 text-amber-600"><Star size={24} /></div><div className="min-w-0"><p className="text-slate-500 text-sm font-medium truncate">Top Item</p><p className="text-xl lg:text-2xl font-bold text-slate-900 truncate">{stats.mostPopularItem}</p></div></div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+              <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-96">
+                <h3 className="text-lg font-bold text-slate-900 mb-6 capitalize">Revenue Timeline - {timeframe}</h3>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" /><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} /><Tooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} formatter={(value) => [value.toLocaleString(), "Revenue"]}/><Bar dataKey="value" radius={[4, 4, 0, 0]}>{chartData.map((entry, index) => <Cell key={'cell-' + index} fill={index % 2 === 0 ? '#0A3325' : '#145c43'} />)}</Bar></BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-96 flex flex-col">
+                <h3 className="text-lg font-bold text-slate-900 mb-4">Items Sold</h3>
+                <div className="flex-1 overflow-y-auto pr-2">
+                    {itemsSoldData.length > 0 ? <div className="space-y-3">{itemsSoldData.map((item, idx) => (<div key={idx} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg border border-transparent hover:border-slate-100 transition-colors"><div className="min-w-0 flex-1 pr-4"><p className="font-medium text-slate-900 truncate">{item.name}</p><p className="text-xs text-slate-500">{formatPrice(item.revenue)}</p></div><div className="flex items-center gap-2 bg-[#0A3325]/10 text-[#0A3325] px-2 py-1 rounded-md shrink-0"><span className="text-sm font-bold">{item.quantity}</span></div></div>))}</div> : <div className="h-full flex items-center justify-center text-slate-400 text-sm">No items sold in this period</div>}
+                </div>
+              </div>
+            </div>
+
+            {/* --- NEW TRANSACTION HISTORY TABLE --- */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-900 mb-4">Transaction History ({timeframe})</h3>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                        <thead><tr className="border-b border-slate-100 text-slate-500 text-sm"><th className="py-3 font-medium">Time</th><th className="py-3 font-medium">Order Name</th><th className="py-3 font-medium">Items</th><th className="py-3 font-medium">Total</th><th className="py-3 font-medium text-right">Action</th></tr></thead>
+                        <tbody>
+                            {filteredSales.map(sale => (
+                                <tr key={sale.id} className="border-b border-slate-50 last:border-none hover:bg-slate-50 group">
+                                    <td className="py-3 text-sm text-slate-600">{new Date(sale.timestamp).toLocaleString()}</td>
+                                    <td className="py-3 font-medium text-slate-900">{sale.ticketName || 'Order'}</td>
+                                    <td className="py-3 text-sm text-slate-500 max-w-[200px] truncate">{sale.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}</td>
+                                    <td className="py-3 font-bold text-[#0A3325]">{formatPrice(sale.total)}</td>
+                                    <td className="py-3 text-right">
+                                        <button onClick={() => deleteSale(sale.id)} className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={18} /></button>
+                                    </td>
+                                </tr>
+                            ))}
+                            {filteredSales.length === 0 && <tr><td colSpan="5" className="py-8 text-center text-slate-400">No transactions found</td></tr>}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+          </div>
+        );
+      };
+
+      // --- POS PAGE ---
+      const POSPage = () => {
+         const { inventory, tickets, createTicket, updateTicketItems, deleteTicket, completeTicket, formatPrice } = useData();
+         const [activeId, setActiveId] = useState('');
+         const [search, setSearch] = useState('');
+         const [cat, setCat] = useState('All');
+         
+         useEffect(() => { if(!tickets.find(t=>t.id===activeId) && tickets.length>0) setActiveId(tickets[0].id); }, [tickets, activeId]);
+         const activeTicket = tickets.find(t=>t.id===activeId) || tickets[0];
+         
+         const displayCategories = useMemo(() => {
+             const cats = new Set(['All']);
+             inventory.forEach(i => cats.add(i.category));
+             return Array.from(cats);
+         }, [inventory]);
+
+         const filtered = inventory.filter(i => (cat==='All'||i.category===cat) && i.name.toLowerCase().includes(search.toLowerCase()));
+         const addItem = (item) => {
+            if(!activeTicket) return;
+            const exists = activeTicket.items.find(i=>i.id===item.id);
+            const newItems = exists ? activeTicket.items.map(i=>i.id===item.id?{...i, quantity:i.quantity+1}:i) : [...activeTicket.items, {...item, quantity:1}];
+            updateTicketItems(activeTicket.id, newItems);
+         };
+
+         return (
+            <div className="flex h-full bg-slate-50">
+               <div className="flex-1 flex flex-col md:pr-80 lg:pr-96">
+                  <div className="p-4 bg-white border-b space-y-4">
+                     <div className="relative"><Search className="absolute left-4 top-3 text-slate-400"/><input className="w-full pl-12 p-3 bg-slate-50 rounded-xl border outline-none focus:border-[#0A3325]" placeholder="Search menu..." value={search} onChange={e=>setSearch(e.target.value)} autoFocus/></div>
+                     <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">{displayCategories.map(c=><button key={c} onClick={()=>setCat(c)} className={`px-4 py-2 rounded-lg whitespace-nowrap font-medium transition-colors ${cat===c?'bg-[#0A3325] text-white':'bg-slate-100 text-slate-600'}`}>{c}</button>)}</div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 content-start">
+                     {filtered.map(item => (
+                        <button key={item.id} onClick={()=>addItem(item)} className="bg-white p-2 rounded-xl border hover:border-[#0A3325] text-left h-36 flex flex-col justify-between shadow-sm relative overflow-hidden group">
+                           {item.img && <img src={item.img} className="absolute inset-0 w-full h-full object-cover opacity-10 group-hover:opacity-20 transition-opacity" onError={(e)=>e.target.style.display='none'}/>}
+                           <span className="font-bold line-clamp-2 z-10 relative">{item.name}</span>
+                           <div className="z-10 relative"><p className="text-[10px] text-slate-500 uppercase">{item.category}</p><span className="text-[#0A3325] font-bold">{formatPrice(item.price)}</span></div>
+                        </button>
+                     ))}
+                  </div>
+               </div>
+               <div className="w-full md:w-80 lg:w-96 fixed right-0 top-0 h-full bg-white border-l flex flex-col pt-16 md:pt-0 z-30 translate-x-full md:translate-x-0 transition-transform shadow-2xl md:shadow-none">
+                  <div className="h-14 border-b flex items-center px-2 gap-2 overflow-x-auto no-scrollbar bg-slate-50">
+                     {tickets.map(t=><button key={t.id} onClick={()=>setActiveId(t.id)} className={`px-3 py-1 text-xs rounded border whitespace-nowrap ${activeId===t.id?'bg-white border-[#0A3325] text-[#0A3325] shadow-sm':'bg-slate-100 text-slate-500'}`}>{t.name}</button>)}
+                     <button onClick={()=>createTicket(`Order ${tickets.length+1}`)} className="px-2"><Plus size={16}/></button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                     {activeTicket?.items.length > 0 ? activeTicket.items.map(i=>(
+                        <div key={i.id} className="flex justify-between items-center bg-slate-50 p-2 rounded border border-slate-100">
+                           <div className="min-w-0 flex-1 pr-2"><div className="truncate font-medium">{i.name}</div><div className="text-xs text-slate-500">{formatPrice(i.price)}</div></div>
+                           <div className="flex items-center gap-2"><button onClick={()=>{const n=activeTicket.items.map(x=>x.id===i.id?{...x, quantity:x.quantity-1}:x).filter(x=>x.quantity>0); updateTicketItems(activeTicket.id, n)}} className="w-7 h-7 bg-white border rounded-full flex items-center justify-center hover:bg-slate-100">-</button><span className="w-4 text-center font-bold">{i.quantity}</span><button onClick={()=>{const n=activeTicket.items.map(x=>x.id===i.id?{...x, quantity:x.quantity+1}:x); updateTicketItems(activeTicket.id, n)}} className="w-7 h-7 bg-[#0A3325] text-white rounded-full flex items-center justify-center hover:bg-[#082a1e]">+</button></div>
+                        </div>
+                     )) : <div className="h-full flex items-center justify-center text-slate-400">Cart Empty</div>}
+                  </div>
+                  <div className="p-4 border-t shadow-lg bg-white">
+                     <div className="flex justify-between text-xl font-bold mb-4"><span>Total</span><span className="text-[#0A3325]">{formatPrice(activeTicket?activeTicket.items.reduce((a,b)=>a+Number(b.price)*b.quantity,0):0)}</span></div>
+                     <button disabled={!activeTicket?.items.length} onClick={()=>completeTicket(activeTicket.id)} className="w-full py-4 bg-[#0A3325] text-white rounded-xl font-bold flex justify-center gap-2 disabled:opacity-50"><CheckCircle/> Check In</button>
+                  </div>
+               </div>
+            </div>
+         );
+      };
+
+      const InventoryPage = () => {
+         const { inventory, addInventoryItem, updateInventoryItem, deleteInventoryItem, formatPrice, currency } = useData();
+         const [mode, setMode] = useState(null);
+         const [form, setForm] = useState({});
+         const handleSubmit = async (e) => {
+             e.preventDefault();
+             if(mode === 'edit') await updateInventoryItem(form);
+             else await addInventoryItem(form);
+             setMode(null);
+         };
+
+         return (
+             <div className="p-6 bg-slate-50 h-full overflow-y-auto">
+                 <div className="flex justify-between items-center mb-6"><h1 className="text-2xl font-bold">Inventory</h1><button onClick={()=>{setForm({name:'', price:0, dbCollectionId: DB_COLLECTIONS[0]}); setMode('add')}} className="bg-[#0A3325] text-white px-4 py-2 rounded-xl flex gap-2"><Plus size={20}/> Add Item</button></div>
+                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                     {inventory.map(item => (
+                         <div key={item.id} className="bg-white p-4 rounded-xl border flex justify-between items-center">
+                             <div className="flex gap-3 items-center">
+                                 <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center overflow-hidden shrink-0">{item.img ? <img src={item.img} className="w-full h-full object-cover"/> : <Package size={20} className="text-slate-400"/>}</div>
+                                 <div className="min-w-0"><div className="font-bold truncate">{item.name}</div><div className="text-xs text-slate-500">{item.category}</div></div>
+                             </div>
+                             <div className="text-right shrink-0">
+                                 <div className="font-bold">{formatPrice(item.price)}</div>
+                                 <div className="flex justify-end gap-2 mt-1"><button onClick={()=>{setForm(item); setMode('edit')}} className="text-slate-400 hover:text-[#0A3325]"><Edit2 size={16}/></button><button onClick={()=>deleteInventoryItem(item)} className="text-slate-400 hover:text-red-500"><Trash2 size={16}/></button></div>
+                             </div>
+                         </div>
+                     ))}
+                 </div>
+                 {(mode) && (
+                     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                         <form onSubmit={handleSubmit} className="bg-white p-6 rounded-2xl w-full max-w-sm space-y-3">
+                             <h3 className="font-bold text-lg">{mode==='add'?'Add':'Edit'} Item</h3>
+                             <input required placeholder="Name" className="w-full border p-2 rounded" value={form.name} onChange={e=>setForm({...form, name:e.target.value})}/>
+                             <input type="number" step="0.01" required placeholder="Price (in USD or LBP)" className="w-full border p-2 rounded" value={form.price} onChange={e=>setForm({...form, price:e.target.value})}/>
+                             <select className="w-full border p-2 rounded" value={form.dbCollectionId} onChange={e=>setForm({...form, dbCollectionId:e.target.value})}>{DB_COLLECTIONS.map(c => <option key={c} value={c}>{c}</option>)}</select>
+                             <input placeholder="Image URL (Optional)" className="w-full border p-2 rounded" value={form.img||''} onChange={e=>setForm({...form, img:e.target.value})}/>
+                             <div className="flex gap-2 pt-2"><button type="button" onClick={()=>setMode(null)} className="flex-1 bg-slate-100 p-2 rounded">Cancel</button><button type="submit" className="flex-1 bg-[#0A3325] text-white p-2 rounded">Save</button></div>
+                         </form>
+                     </div>
+                 )}
+             </div>
+         );
+      };
+
+      const App = () => {
+         const { user } = useContext(AuthContext);
+         const { toggleCurrency, currency } = useData();
+         const [view, setView] = useState('pos');
+         const [mobile, setMobile] = useState(false);
+         if(!user) return <LoginScreen />;
+         return (
+             <div className="flex h-full w-full bg-slate-50">
+                 <aside className="hidden md:flex flex-col w-64 bg-white border-r z-40">
+                     <div className="h-24 flex items-center justify-center border-b"><img src="logo.png" className="w-16 h-16 rounded-full bg-slate-100 object-cover shadow-sm"/></div>
+                     <nav className="flex-1 p-4 space-y-1">
+                         <button onClick={()=>setView('pos')} className={`flex items-center gap-3 w-full p-3 rounded-xl font-medium ${view==='pos'?'bg-[#0A3325] text-white shadow-lg shadow-[#0A3325]/20':'text-slate-500 hover:bg-slate-50'}`}><ShoppingCart size={20}/> Orders</button>
+                         <button onClick={()=>setView('sales')} className={`flex items-center gap-3 w-full p-3 rounded-xl font-medium ${view==='sales'?'bg-[#0A3325] text-white shadow-lg shadow-[#0A3325]/20':'text-slate-500 hover:bg-slate-50'}`}><LayoutDashboard size={20}/> Sales</button>
+                         <button onClick={()=>setView('inv')} className={`flex items-center gap-3 w-full p-3 rounded-xl font-medium ${view==='inv'?'bg-[#0A3325] text-white shadow-lg shadow-[#0A3325]/20':'text-slate-500 hover:bg-slate-50'}`}><Package size={20}/> Inventory</button>
+                     </nav>
+                     <div className="p-4 border-t space-y-2"><button onClick={toggleCurrency} className="flex justify-between items-center w-full p-3 bg-slate-50 rounded-xl text-sm font-bold border hover:bg-slate-100"><span>Currency</span><span>{currency}</span></button><button onClick={()=>signOut(auth)} className="flex items-center gap-3 w-full p-3 text-red-600 hover:bg-red-50 rounded-xl font-medium"><LogOut size={20}/> Log Out</button></div>
+                 </aside>
+                 <div className="md:hidden fixed top-0 w-full h-16 bg-white border-b flex items-center justify-between px-4 z-50"><img src="logo.png" className="w-10 h-10 rounded-full"/><button onClick={()=>setMobile(!mobile)}><Menu/></button></div>
+                 {mobile && <div className="fixed inset-0 bg-black/50 z-50 md:hidden" onClick={()=>setMobile(false)}><div className="absolute right-0 h-full w-64 bg-white p-4 pt-20" onClick={e=>e.stopPropagation()}><button onClick={()=>{setView('pos');setMobile(false)}} className="block w-full text-left p-3 font-bold">Orders</button><button onClick={()=>{setView('sales');setMobile(false)}} className="block w-full text-left p-3 font-bold">Sales</button><button onClick={()=>{setView('inv');setMobile(false)}} className="block w-full text-left p-3 font-bold">Inventory</button><button onClick={()=>signOut(auth)} className="block w-full text-left p-3 text-red-600 font-bold mt-4">Log Out</button></div></div>}
+                 <main className="flex-1 h-full overflow-hidden pt-16 md:pt-0">{view === 'pos' ? <POSPage/> : view === 'sales' ? <SalesPage/> : <InventoryPage/>}</main>
+             </div>
+         );
+      };
+      const root = createRoot(document.getElementById('root'));
+      root.render(<React.StrictMode><AuthProvider><DataProvider><App/></DataProvider></AuthProvider></React.StrictMode>);
+    </script>
+
+   
+  
+      
+</body>
+
+</html>
